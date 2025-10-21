@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 )
 
@@ -48,13 +51,39 @@ type GameEndData struct {
 }
 
 func sendMessage(conn net.Conn, msg Message) error {
-	return json.NewEncoder(conn).Encode(msg)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	lenb := make([]byte, 4)
+	binary.BigEndian.PutUint32(lenb, uint32(len(data)))
+	if _, err := conn.Write(lenb); err != nil {
+		return err
+	}
+	if _, err := conn.Write(data); err != nil {
+		return err
+	}
+	return nil
 }
 
 func readMessage(conn net.Conn) (Message, error) {
+	var lenb [4]byte
+	if _, err := io.ReadFull(conn, lenb[:]); err != nil {
+		return Message{}, err
+	}
+	length := binary.BigEndian.Uint32(lenb[:])
+	if length > 1<<20 {
+		return Message{}, fmt.Errorf("message too large: %d", length)
+	}
+	buf := make([]byte, length)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return Message{}, err
+	}
 	var msg Message
-	err := json.NewDecoder(conn).Decode(&msg)
-	return msg, err
+	if err := json.Unmarshal(buf, &msg); err != nil {
+		return Message{}, fmt.Errorf("json unmarshal: %w", err)
+	}
+	return msg, nil
 }
 
 func (m *Message) DecodeData(v any) error {

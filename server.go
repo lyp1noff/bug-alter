@@ -31,6 +31,13 @@ func runServer(addr string) {
 			log.Println("Error:", err)
 			continue
 		}
+
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			if err := tcpConn.SetNoDelay(true); err != nil {
+				log.Printf("SetNoDelay error: %v", err)
+			}
+		}
+
 		players = append(players, &Player{
 			Conn:     conn,
 			Board:    initBoard(BoardSize),

@@ -22,6 +22,12 @@ func runClient(addr string) {
 		}
 	}(conn)
 
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		if err := tcpConn.SetNoDelay(true); err != nil {
+			log.Printf("SetNoDelay error: %v", err)
+		}
+	}
+
 	fmt.Println("Connected to", addr)
 
 	msgQueue := make(chan Message, 8)
