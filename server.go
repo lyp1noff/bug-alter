@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"net"
 	"time"
 )
@@ -13,29 +13,25 @@ func runServer(addr string) {
 	}
 	defer listener.Close()
 
-	fmt.Printf("Server is listening on %s\n", addr)
+	log.Printf("Server is listening on %s\n", addr)
 
+	disconnect := make(chan *Player, 1)
 	players := make([]*Player, 0, 2)
 
 	for len(players) < 2 {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Error:", err)
+			log.Println("Error:", err)
 			continue
 		}
-		players = append(players, &Player{conn, initBoard(Size), make(chan Message, 1), make(chan Message, 1)})
-		fmt.Println("Player connected:", conn.RemoteAddr())
-	}
-
-	for _, player := range players {
-		placeWarships(player.Board, EnemyWarshipsCount)
-		err := sendMessage(player.Conn, Message{
-			Type: MessageInit,
-			Data: nil,
+		players = append(players, &Player{
+			Conn:     conn,
+			Board:    initBoard(BoardSize),
+			Warships: make([][]int, 0, EnemyWarshipsCount),
+			In:       make(chan Message, 8),
+			Out:      make(chan Message, 8),
 		})
-		if err != nil {
-			return
-		}
+		log.Println("Player connected:", conn.RemoteAddr())
 	}
 
 	for _, player := range players {
@@ -43,38 +39,57 @@ func runServer(addr string) {
 			for {
 				inMsg, err := readMessage(player.Conn)
 				if err != nil {
-					fmt.Println("Error:", err)
+					log.Println("Error:", err)
+					disconnect <- player
+					player.Conn.Close()
 					return
 				}
 				player.In <- inMsg
 			}
 		}(player)
-	}
 
-	for _, player := range players {
 		go func(player *Player) {
 			for {
 				msg := <-player.Out
 				err := sendMessage(player.Conn, msg)
+				log.Printf("[Writer %p] Sending %s to %s\n", player, msg.Type, player.Conn.RemoteAddr())
 				if err != nil {
-					fmt.Println("Error:", err)
+					log.Println("Error:", err)
 					return
 				}
 			}
 		}(player)
+
+		player.Warships = placeWarships(player.Board, EnemyWarshipsCount)
+
+		msg := Message{Type: MessageInit}
+		err := msg.EncodeData(InitData{player.Warships})
+		if err != nil {
+			return
+		}
+		player.Out <- msg
 	}
 
 	time.Sleep(200 * time.Millisecond)
-	players[0].Out <- Message{Type: MessageResult, Data: nil}
+	players[0].Out <- Message{Type: MessageTurn, Data: nil}
+
 	for {
 		select {
 		case msg := <-players[0].In:
-			fmt.Println("Player 1:", msg)
+			log.Println("Player 0:", msg.Type)
 			gameProcessor(players[0], players[1], msg)
 
 		case msg := <-players[1].In:
-			fmt.Println("Player 2:", msg)
+			log.Println("Player 1:", msg.Type)
 			gameProcessor(players[1], players[0], msg)
+
+		case p := <-disconnect:
+			log.Println("Disconnect:", p.Conn.RemoteAddr())
+			for _, pl := range players {
+				close(pl.Out)
+				pl.Conn.Close()
+			}
+			return
 		}
 	}
 }
@@ -82,15 +97,40 @@ func runServer(addr string) {
 func gameProcessor(playerFrom, playerTo *Player, msg Message) {
 	switch msg.Type {
 	case MessageShot:
-		data := msg.Data.(map[string]interface{})
-		x := int(data["x"].(float64))
-		y := int(data["y"].(float64))
+		var shot ShotData
+		err := msg.DecodeData(&shot)
+		if err != nil {
+			return
+		}
 
-		hit := shoot(playerTo.Board, x, y)
+		hit := shoot(playerTo.Board, shot.X, shot.Y)
 
-		playerFrom.Out <- Message{
-			Type: MessageResult,
-			Data: ResultData{Hit: hit, GameOver: false},
+		resultMsg := Message{Type: MessageResult}
+		err = resultMsg.EncodeData(ResultData{X: shot.X, Y: shot.Y, Hit: hit})
+		if err != nil {
+			return
+		}
+		playerFrom.Out <- resultMsg
+
+		shotMsg := Message{Type: MessageShot}
+		err = shotMsg.EncodeData(ShotData{shot.X, shot.Y})
+		if err != nil {
+			return
+		}
+		playerTo.Out <- shotMsg
+
+		loserList := []bool{isGameOver(playerFrom.Board), isGameOver(playerTo.Board)}
+		if loserList[0] || loserList[1] {
+			for i, player := range []*Player{playerFrom, playerTo} {
+				endMsg := Message{Type: MessageGameEnd}
+				err := endMsg.EncodeData(GameEndData{Winner: !loserList[i]})
+				if err != nil {
+					return
+				}
+				player.Out <- endMsg
+			}
+			time.Sleep(5 * time.Second)
+			return
 		}
 
 		if hit {

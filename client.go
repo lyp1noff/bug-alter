@@ -2,11 +2,10 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
+	"time"
 )
 
 func runClient(addr string) {
@@ -19,29 +18,101 @@ func runClient(addr string) {
 
 	fmt.Println("Connected to", addr)
 
-	scanner := bufio.NewScanner(os.Stdin)
-	board := initBoard(5)
-	for {
-		msg, err := readMessage(conn)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				fmt.Println("Client disconnected:", conn.RemoteAddr())
-			} else {
-				fmt.Println("Error reading:", err)
+	msgQueue := make(chan Message, 8)
+	go func() {
+		for {
+			msg, err := readMessage(conn)
+			if err != nil {
+				fmt.Println("Disconnected:", err)
+				close(msgQueue)
+				return
 			}
-			break
+			msgQueue <- msg
 		}
+	}()
 
-		if msg.Type == MessageResult {
-			println(msg.Data)
+	board := initBoard(BoardSize)
+	enemyBoard := initBoard(BoardSize)
 
-			x, y := readCoordsAndValidate(scanner, board)
+	scanner := bufio.NewScanner(os.Stdin)
+	for msg := range msgQueue {
+		switch msg.Type {
+		case MessageInit:
+			var data InitData
+			err := msg.DecodeData(&data)
+			if err != nil {
+				fmt.Println("Error:", err)
+				return
+			}
 
-			msg := Message{MessageShot, ShotData{x, y}}
-			err := sendMessage(conn, msg)
+			for _, warship := range data.Warships {
+				board[warship[1]][warship[0]] = Ship
+			}
+
+			redraw()
+			printBoards(board, enemyBoard)
+
+		case MessageResult:
+			var data ResultData
+			err := msg.DecodeData(&data)
 			if err != nil {
 				return
 			}
+
+			if data.Hit {
+				enemyBoard[data.Y][data.X] = Hit
+			} else {
+				enemyBoard[data.Y][data.X] = Miss
+			}
+
+			redraw()
+			printBoards(board, enemyBoard)
+
+			result := "Miss"
+			if data.Hit {
+				result = "Hit"
+			}
+			fmt.Printf("%s at %c%d\n", result, 'A'+data.X, data.Y+1)
+
+		case MessageShot:
+			var shot ShotData
+			if msg.HasData() {
+				_ = msg.DecodeData(&shot)
+				shoot(board, shot.X, shot.Y)
+
+				redraw()
+				printBoards(board, enemyBoard)
+				fmt.Printf("Opponent shot at %d,%d\n\n", shot.X, shot.Y)
+			}
+
+		case MessageTurn:
+			x, y := readCoordsAndValidate(scanner, enemyBoard)
+
+			shotMsg := Message{Type: MessageShot}
+			err = shotMsg.EncodeData(ShotData{x, y})
+			if err != nil {
+				return
+			}
+			err = sendMessage(conn, shotMsg)
+			if err != nil {
+				return
+			}
+
+		case MessageGameEnd:
+			var data GameEndData
+			err := msg.DecodeData(&data)
+			if err != nil {
+				return
+			}
+
+			if data.Winner {
+				fmt.Println("Winner Winner Chicken Dinner!")
+			} else {
+				fmt.Println("You lost!")
+			}
+
+			time.Sleep(5 * time.Second)
+			return
 		}
 	}
 }
