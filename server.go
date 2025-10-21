@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -11,7 +12,13 @@ func runServer(addr string) {
 	if err != nil {
 		return
 	}
-	defer listener.Close()
+	defer func(listener net.Listener) {
+		err := listener.Close()
+		if err != nil {
+			fmt.Println("Error closing listener:", err)
+			return
+		}
+	}(listener)
 
 	log.Printf("Server is listening on %s\n", addr)
 
@@ -41,7 +48,7 @@ func runServer(addr string) {
 				if err != nil {
 					log.Println("Error:", err)
 					disconnect <- player
-					player.Conn.Close()
+					_ = player.Conn.Close()
 					return
 				}
 				player.In <- inMsg
@@ -87,7 +94,7 @@ func runServer(addr string) {
 			log.Println("Disconnect:", p.Conn.RemoteAddr())
 			for _, pl := range players {
 				close(pl.Out)
-				pl.Conn.Close()
+				_ = pl.Conn.Close()
 			}
 			return
 		}

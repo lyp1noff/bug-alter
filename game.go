@@ -169,7 +169,7 @@ func readCoordsAndValidate(scanner *bufio.Scanner, board [][]byte) (int, int) {
 		}
 
 		x = int(letter - 'A')
-		y = yInt - 1 // т.к. отображаем от 1, а индексация с 0
+		y = yInt - 1
 
 		if x < 0 || x >= BoardSize || y < 0 || y >= BoardSize {
 			fmt.Println("Coordinates out of range.")

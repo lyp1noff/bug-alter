@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"time"
@@ -14,7 +15,12 @@ func runClient(addr string) {
 		fmt.Println("Error:", err)
 		return
 	}
-	defer conn.Close()
+	defer func(conn net.Conn) {
+		err := conn.Close()
+		if err != nil {
+			log.Println("Error closing connection:", err)
+		}
+	}(conn)
 
 	fmt.Println("Connected to", addr)
 
@@ -82,7 +88,7 @@ func runClient(addr string) {
 
 				redraw()
 				printBoards(board, enemyBoard)
-				fmt.Printf("Opponent shot at %d,%d\n\n", shot.X, shot.Y)
+				fmt.Printf("Opponent shot at %c,%d\n\n", 'A'+shot.X, shot.Y+1)
 			}
 
 		case MessageTurn:
