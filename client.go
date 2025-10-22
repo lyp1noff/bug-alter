@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -31,11 +33,17 @@ func runClient(addr string) {
 	fmt.Println("Connected to", addr)
 
 	msgQueue := make(chan Message, 8)
+
 	go func() {
 		for {
 			msg, err := readMessage(conn)
 			if err != nil {
-				fmt.Println("Disconnected:", err)
+				if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+					fmt.Println("Disconnected from server.")
+				} else {
+					fmt.Printf("Connection error: %v\n", err)
+				}
+
 				close(msgQueue)
 				return
 			}

@@ -1,7 +1,8 @@
 package main
 
 import (
-	"fmt"
+	"errors"
+	"io"
 	"log"
 	"net"
 	"time"
@@ -10,101 +11,104 @@ import (
 func runServer(addr string) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return
+		log.Fatalf("Error starting server: %v", err)
 	}
-	defer func(listener net.Listener) {
-		err := listener.Close()
-		if err != nil {
-			fmt.Println("Error closing listener:", err)
-			return
+	defer func() {
+		if err := listener.Close(); err != nil {
+			log.Printf("Error closing listener: %v", err)
 		}
-	}(listener)
+	}()
 
 	log.Printf("Server is listening on %s\n", addr)
 
-	disconnect := make(chan *Player, 1)
-	players := make([]*Player, 0, 2)
+	for {
+		log.Println("Waiting for players...")
+		players := make([]*Player, 0, 2)
 
-	for len(players) < 2 {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Println("Error:", err)
-			continue
-		}
-
-		if tcpConn, ok := conn.(*net.TCPConn); ok {
-			if err := tcpConn.SetNoDelay(true); err != nil {
-				log.Printf("SetNoDelay error: %v", err)
+		for len(players) < 2 {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.Printf("Accept error: %v", err)
+				continue
 			}
+
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				_ = tcpConn.SetNoDelay(true)
+			}
+
+			player := &Player{
+				Conn:  conn,
+				Board: initBoard(DefaultBoardSize),
+				Ships: make([]Ship, 0, len(DefaultShipLengths)),
+				In:    make(chan Message, 8),
+				Out:   make(chan Message, 8),
+			}
+			player.Ships = placeShips(player.Board, DefaultShipLengths)
+			players = append(players, player)
+			log.Printf("Player connected: %s", conn.RemoteAddr())
 		}
 
-		players = append(players, &Player{
-			Conn:  conn,
-			Board: initBoard(DefaultBoardSize),
-			Ships: make([]Ship, 0, len(DefaultShipLengths)),
-			In:    make(chan Message, 8),
-			Out:   make(chan Message, 8),
-		})
-		log.Println("Player connected:", conn.RemoteAddr())
+		log.Println("Starting new game...")
+		go runGame(players)
 	}
+}
+
+func runGame(players []*Player) {
+	disconnect := make(chan *Player, 1)
 
 	for _, player := range players {
-		go func(player *Player) {
+		go func(p *Player) {
 			for {
-				inMsg, err := readMessage(player.Conn)
+				msg, err := readMessage(p.Conn)
 				if err != nil {
-					log.Println("Error:", err)
-					disconnect <- player
-					_ = player.Conn.Close()
+					if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+						log.Printf("Player %s disconnected gracefully", p.Conn.RemoteAddr())
+					} else {
+						log.Printf("Read error from %s: %v", p.Conn.RemoteAddr(), err)
+					}
+					disconnect <- p
 					return
 				}
-				player.In <- inMsg
+				p.In <- msg
 			}
 		}(player)
 
-		go func(player *Player) {
-			for {
-				msg := <-player.Out
-				err := sendMessage(player.Conn, msg)
-				log.Printf("[Writer %p] Sending %s to %s\n", player, msg.Type, player.Conn.RemoteAddr())
-				if err != nil {
-					log.Println("Error:", err)
+		go func(p *Player) {
+			for msg := range p.Out {
+				if err := sendMessage(p.Conn, msg); err != nil {
+					log.Printf("Write error to %s: %v", p.Conn.RemoteAddr(), err)
 					return
 				}
 			}
 		}(player)
 
-		player.Ships = placeShips(player.Board, DefaultShipLengths)
-
-		msg := Message{Type: MessageInit}
-		err := msg.EncodeData(InitData{player.Ships})
-		if err != nil {
-			return
+		initMsg := Message{Type: MessageInit}
+		if err := initMsg.EncodeData(InitData{Ships: player.Ships}); err == nil {
+			player.Out <- initMsg
 		}
-		player.Out <- msg
 	}
 
 	time.Sleep(200 * time.Millisecond)
-	players[0].Out <- Message{Type: MessageTurn, Data: nil}
+	players[0].Out <- Message{Type: MessageTurn}
 
 	for {
 		select {
 		case msg := <-players[0].In:
-			log.Println("Player 0:", msg.Type)
 			gameProcessor(players[0], players[1], msg)
-
 		case msg := <-players[1].In:
-			log.Println("Player 1:", msg.Type)
 			gameProcessor(players[1], players[0], msg)
-
 		case p := <-disconnect:
-			log.Println("Disconnect:", p.Conn.RemoteAddr())
-			for _, pl := range players {
-				close(pl.Out)
-				_ = pl.Conn.Close()
-			}
+			log.Printf("Player disconnected: %s", p.Conn.RemoteAddr())
+			cleanupGame(players)
+			log.Println("Game ended — returning to lobby.")
 			return
 		}
+	}
+}
+
+func cleanupGame(players []*Player) {
+	for _, p := range players {
+		_ = p.Conn.Close()
 	}
 }
 
@@ -112,51 +116,42 @@ func gameProcessor(playerFrom, playerTo *Player, msg Message) {
 	switch msg.Type {
 	case MessageShot:
 		var shot ShotData
-		err := msg.DecodeData(&shot)
-		if err != nil {
+		if err := msg.DecodeData(&shot); err != nil {
 			return
 		}
 
 		shotResult := shoot(playerTo.Board, playerTo.Ships, shot.X, shot.Y)
 
 		resultMsg := Message{Type: MessageResult}
-		err = resultMsg.EncodeData(ResultData{
+		_ = resultMsg.EncodeData(ResultData{
 			X:         shot.X,
 			Y:         shot.Y,
 			Hit:       shotResult.Hit,
 			Destroyed: shotResult.Destroyed,
 			SunkShip:  shotResult.SunkShipCoords,
 		})
-		if err != nil {
-			return
-		}
 		playerFrom.Out <- resultMsg
 
 		shotMsg := Message{Type: MessageShot}
-		err = shotMsg.EncodeData(ShotData{shot.X, shot.Y})
-		if err != nil {
-			return
-		}
+		_ = shotMsg.EncodeData(ShotData{shot.X, shot.Y})
 		playerTo.Out <- shotMsg
 
-		loserList := []bool{isGameOver(playerFrom.Board), isGameOver(playerTo.Board)}
-		if loserList[0] || loserList[1] {
-			for i, player := range []*Player{playerFrom, playerTo} {
+		if isGameOver(playerTo.Board) {
+			for _, p := range []*Player{playerFrom, playerTo} {
 				endMsg := Message{Type: MessageGameEnd}
-				err := endMsg.EncodeData(GameEndData{Winner: !loserList[i]})
-				if err != nil {
-					return
-				}
-				player.Out <- endMsg
+				_ = endMsg.EncodeData(GameEndData{Winner: p == playerFrom})
+				p.Out <- endMsg
 			}
 			time.Sleep(5 * time.Second)
+			cleanupGame([]*Player{playerFrom, playerTo})
+			log.Println("Game completed successfully — back to lobby.")
 			return
 		}
 
 		if shotResult.Hit {
-			playerFrom.Out <- Message{Type: MessageTurn, Data: nil}
+			playerFrom.Out <- Message{Type: MessageTurn}
 		} else {
-			playerTo.Out <- Message{Type: MessageTurn, Data: nil}
+			playerTo.Out <- Message{Type: MessageTurn}
 		}
 	}
 }
