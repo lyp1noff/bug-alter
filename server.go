@@ -39,11 +39,11 @@ func runServer(addr string) {
 		}
 
 		players = append(players, &Player{
-			Conn:     conn,
-			Board:    initBoard(BoardSize),
-			Warships: make([][]int, 0, EnemyWarshipsCount),
-			In:       make(chan Message, 8),
-			Out:      make(chan Message, 8),
+			Conn:  conn,
+			Board: initBoard(DefaultBoardSize),
+			Ships: make([]Ship, 0, len(DefaultShipLengths)),
+			In:    make(chan Message, 8),
+			Out:   make(chan Message, 8),
 		})
 		log.Println("Player connected:", conn.RemoteAddr())
 	}
@@ -74,10 +74,10 @@ func runServer(addr string) {
 			}
 		}(player)
 
-		player.Warships = placeWarships(player.Board, EnemyWarshipsCount)
+		player.Ships = placeShips(player.Board, DefaultShipLengths)
 
 		msg := Message{Type: MessageInit}
-		err := msg.EncodeData(InitData{player.Warships})
+		err := msg.EncodeData(InitData{player.Ships})
 		if err != nil {
 			return
 		}
@@ -117,10 +117,16 @@ func gameProcessor(playerFrom, playerTo *Player, msg Message) {
 			return
 		}
 
-		hit := shoot(playerTo.Board, shot.X, shot.Y)
+		shotResult := shoot(playerTo.Board, playerTo.Ships, shot.X, shot.Y)
 
 		resultMsg := Message{Type: MessageResult}
-		err = resultMsg.EncodeData(ResultData{X: shot.X, Y: shot.Y, Hit: hit})
+		err = resultMsg.EncodeData(ResultData{
+			X:         shot.X,
+			Y:         shot.Y,
+			Hit:       shotResult.Hit,
+			Destroyed: shotResult.Destroyed,
+			SunkShip:  shotResult.SunkShipCoords,
+		})
 		if err != nil {
 			return
 		}
@@ -147,7 +153,7 @@ func gameProcessor(playerFrom, playerTo *Player, msg Message) {
 			return
 		}
 
-		if hit {
+		if shotResult.Hit {
 			playerFrom.Out <- Message{Type: MessageTurn, Data: nil}
 		} else {
 			playerTo.Out <- Message{Type: MessageTurn, Data: nil}

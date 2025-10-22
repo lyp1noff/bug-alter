@@ -9,11 +9,11 @@ import (
 )
 
 type Player struct {
-	Conn     net.Conn
-	Board    [][]byte
-	Warships [][]int
-	In       chan Message
-	Out      chan Message
+	Conn  net.Conn
+	Board [][]byte
+	Ships []Ship
+	In    chan Message
+	Out   chan Message
 }
 
 type Message struct {
@@ -32,7 +32,7 @@ const (
 )
 
 type InitData struct {
-	Warships [][]int `json:"warships"`
+	Ships []Ship `json:"ships"`
 }
 
 type ShotData struct {
@@ -41,9 +41,11 @@ type ShotData struct {
 }
 
 type ResultData struct {
-	X   int  `json:"x"`
-	Y   int  `json:"y"`
-	Hit bool `json:"hit"`
+	X         int      `json:"x"`
+	Y         int      `json:"y"`
+	Hit       bool     `json:"hit"`
+	Destroyed bool     `json:"destroyed"`
+	SunkShip  [][2]int `json:"sunk_ship,omitempty"`
 }
 
 type GameEndData struct {

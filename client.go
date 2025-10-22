@@ -43,8 +43,9 @@ func runClient(addr string) {
 		}
 	}()
 
-	board := initBoard(BoardSize)
-	enemyBoard := initBoard(BoardSize)
+	board := initBoard(DefaultBoardSize)
+	enemyBoard := initBoard(DefaultBoardSize)
+	var ships []Ship
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for msg := range msgQueue {
@@ -57,8 +58,12 @@ func runClient(addr string) {
 				return
 			}
 
-			for _, warship := range data.Warships {
-				board[warship[1]][warship[0]] = Ship
+			ships = data.Ships
+
+			for _, ship := range data.Ships {
+				for _, c := range ship.Coords {
+					board[c[1]][c[0]] = CellShip
+				}
 			}
 
 			redraw()
@@ -72,9 +77,15 @@ func runClient(addr string) {
 			}
 
 			if data.Hit {
-				enemyBoard[data.Y][data.X] = Hit
+				enemyBoard[data.Y][data.X] = CellHit
 			} else {
-				enemyBoard[data.Y][data.X] = Miss
+				enemyBoard[data.Y][data.X] = CellMiss
+			}
+
+			if data.Destroyed {
+				if len(data.SunkShip) > 0 {
+					markAroundDestroyed(enemyBoard, data.SunkShip)
+				}
 			}
 
 			redraw()
@@ -84,13 +95,17 @@ func runClient(addr string) {
 			if data.Hit {
 				result = "Hit"
 			}
+			if data.Destroyed {
+				result = "Destroyed"
+			}
+
 			fmt.Printf("%s at %c%d\n", result, 'A'+data.X, data.Y+1)
 
 		case MessageShot:
 			var shot ShotData
 			if msg.HasData() {
 				_ = msg.DecodeData(&shot)
-				shoot(board, shot.X, shot.Y)
+				shoot(board, ships, shot.X, shot.Y)
 
 				redraw()
 				printBoards(board, enemyBoard)
