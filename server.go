@@ -36,6 +36,21 @@ func runServer(addr string) {
 				_ = tcpConn.SetNoDelay(true)
 			}
 
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			msg, err := readMessage(conn)
+			if err != nil {
+				log.Printf("Handshake failed from %s: %v", conn.RemoteAddr(), err)
+				_ = conn.Close()
+				continue
+			}
+			_ = conn.SetReadDeadline(time.Time{})
+
+			if msg.Type != MessageHello {
+				log.Printf("Ignored unexpected connection from %s (no hello)", conn.RemoteAddr())
+				_ = conn.Close()
+				continue
+			}
+
 			player := &Player{
 				Conn:  conn,
 				Board: initBoard(DefaultBoardSize),
@@ -97,8 +112,7 @@ func runGame(players []*Player) {
 			gameProcessor(players[0], players[1], msg)
 		case msg := <-players[1].In:
 			gameProcessor(players[1], players[0], msg)
-		case p := <-disconnect:
-			log.Printf("Player disconnected: %s", p.Conn.RemoteAddr())
+		case _ = <-disconnect:
 			cleanupGame(players)
 			log.Println("Game ended — returning to lobby.")
 			return

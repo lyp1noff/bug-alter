@@ -8,15 +8,34 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
-func runClient(addr string) {
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		fmt.Println("Error:", err)
-		return
+func connectWithRetry(addr string) net.Conn {
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		fmt.Printf("Connecting to %s...\n", addr)
+		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err == nil {
+			return conn
+		}
+
+		fmt.Printf("❌ Connection failed: %v\n", err)
+		fmt.Print("Enter another address or press Enter to exit: ")
+
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		if input == "" {
+			return nil
+		}
+		addr = input
 	}
+}
+
+func runClient(addr string) {
+	conn := connectWithRetry(addr)
 	defer func(conn net.Conn) {
 		err := conn.Close()
 		if err != nil {
@@ -30,7 +49,12 @@ func runClient(addr string) {
 		}
 	}
 
-	fmt.Println("Connected to", addr)
+	err := sendMessage(conn, Message{Type: MessageHello})
+	if err != nil {
+		log.Println("Error establishing connection:", err)
+		return
+	}
+	fmt.Println("Connected")
 
 	msgQueue := make(chan Message, 8)
 

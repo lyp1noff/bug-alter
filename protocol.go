@@ -24,6 +24,7 @@ type Message struct {
 type MessageType string
 
 const (
+	MessageHello   MessageType = "hello"
 	MessageInit    MessageType = "init"
 	MessageShot    MessageType = "shot"
 	MessageResult  MessageType = "result"
